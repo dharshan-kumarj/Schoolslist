@@ -19,14 +19,20 @@ headers = {
 
 async def fetch(session, url):
     async with session.get(url, headers=headers) as response:
-        return await response.text()
+        if response.status == 200:
+            return await response.text()
+        return None
 
 async def get_soup(session, url):
     html = await fetch(session, url)
-    return BeautifulSoup(html, 'html.parser')
+    if html:
+        return BeautifulSoup(html, 'html.parser')
+    return None
 
 async def extract_contact_info(session, url):
     soup = await get_soup(session, url)
+    if not soup:
+        return None
     
     contact_info = {
         'Name': 'null',
@@ -74,10 +80,13 @@ async def extract_contact_info(session, url):
     logging.info(f"Extracted info for {contact_info['Name']}")
     return contact_info
 
-async def process_state(session, state_url, state_name):
-    logging.info(f"Processing {state_name} schools")
+async def process_state_page(session, state_url, state_name):
+    logging.info(f"Processing {state_name} page: {state_url}")
     
     soup = await get_soup(session, state_url)
+    if not soup:
+        return []
+    
     school_links = soup.select('a.btn.pmd-btn-flat.btn-block.btn-primary.pmd-ripple-effect')
     
     all_schools_data = []
@@ -87,6 +96,26 @@ async def process_state(session, state_url, state_name):
         if school_data:
             school_data['State'] = state_name
             all_schools_data.append(school_data)
+    
+    return all_schools_data
+
+async def process_state(session, base_state_url, state_name):
+    all_schools_data = []
+    rec_no = 0
+    
+    while True:
+        if rec_no == 0:
+            state_url = base_state_url
+        else:
+            state_url = f"{base_state_url}?recNo={rec_no}"
+        
+        page_data = await process_state_page(session, state_url, state_name)
+        
+        if not page_data:
+            break
+        
+        all_schools_data.extend(page_data)
+        rec_no += 25
     
     return all_schools_data
 
