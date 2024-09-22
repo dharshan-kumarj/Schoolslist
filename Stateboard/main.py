@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from urllib.parse import urljoin
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -75,7 +76,11 @@ async def extract_contact_info(session, url):
                     else:
                         contact_info['Email'] = value_text if value_text else 'null'
                 elif 'web_asset' in key_text:
-                    contact_info['Website'] = value_text
+                    website_link = value.find('a')
+                    if website_link and 'href' in website_link.attrs:
+                        contact_info['Website'] = website_link['href']
+                    else:
+                        contact_info['Website'] = value_text if value_text else 'null'
 
     logging.info(f"Extracted info for {contact_info['Name']}")
     return contact_info
@@ -119,31 +124,68 @@ async def process_state(session, base_state_url, state_name):
     
     return all_schools_data
 
-async def main():
-    states = {
-        'Andhra Pradesh': 'https://targetstudy.com/school/state-board-schools-in-andhra-pradesh.html',
-        'Arunachal Pradesh': 'https://targetstudy.com/school/state-board-schools-in-arunachal-pradesh.html'
-    }
+async def get_remaining_states(session, main_url):
+    soup = await get_soup(session, main_url)
+    if not soup:
+        return {}
+
+    states = {}
+    state_links = soup.select('div.list-group.pmd-list.pmd-list-bullet a')
+    start_processing = False
+    for link in state_links:
+        state_name = link.text.strip().split(' in ')[-1]
+        if state_name == 'Chhattisgarh':
+            start_processing = True
+        if start_processing:
+            state_url = urljoin(main_url, link['href'])
+            states[state_name] = state_url
+        if state_name == 'Ladakh':
+            break
     
-    all_schools_data = []
+    return states
+
+def read_existing_excel(file_name):
+    if os.path.exists(file_name):
+        return pd.read_excel(file_name)
+    return pd.DataFrame(columns=['State', 'Name', 'Address', 'Phone', 'Email', 'Website'])
+
+async def main():
+    main_url = 'https://targetstudy.com/school/state-board-schools-in-india.html'
+    excel_file = "first_five_states_schools_info.xlsx"
+    
+    # Read existing data
+    existing_df = read_existing_excel(excel_file)
     
     async with aiohttp.ClientSession(headers=headers) as session:
+        states = await get_remaining_states(session, main_url)
+        
+        if not states:
+            logging.error("Failed to fetch state links. Exiting.")
+            return
+
+        all_schools_data = []
+        
         for state_name, state_url in states.items():
+            logging.info(f"Processing state: {state_name}")
             state_data = await process_state(session, state_url, state_name)
             all_schools_data.extend(state_data)
 
     if all_schools_data:
-        df = pd.DataFrame(all_schools_data)
-        df = df[['State', 'Name', 'Address', 'Phone', 'Email', 'Website']]  # Reorder columns
-        excel_file = "ap_arunachal_schools_info.xlsx"
-        df.to_excel(excel_file, index=False)
+        new_df = pd.DataFrame(all_schools_data)
+        new_df = new_df[['State', 'Name', 'Address', 'Phone', 'Email', 'Website']]  # Reorder columns
+        
+        # Combine existing and new data
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        
+        combined_df.to_excel(excel_file, index=False)
         logging.info(f"Data saved to {excel_file}")
         print(f"Data saved to {excel_file}")
-        print(f"Extracted data for {len(all_schools_data)} schools:")
-        print(df)
+        print(f"Extracted data for {len(all_schools_data)} new schools across {len(states)} states:")
+        print(new_df.groupby('State').size())
+        print(f"Total schools in the file: {len(combined_df)}")
     else:
-        logging.error("No data collected. Excel file not created.")
-        print("No data collected. Excel file not created.")
+        logging.error("No new data collected. Excel file not updated.")
+        print("No new data collected. Excel file not updated.")
 
 if __name__ == "__main__":
     asyncio.run(main())
