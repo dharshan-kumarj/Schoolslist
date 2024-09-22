@@ -1,90 +1,120 @@
-import requests
+import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
-from fpdf import FPDF
-import time
+import pandas as pd
+from urllib.parse import urljoin
+import logging
 
-def get_soup(url):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Referer': 'https://www.google.com/',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1'
+}
+
+async def fetch(session, url):
+    async with session.get(url, headers=headers) as response:
+        return await response.text()
+
+async def get_soup(session, url):
+    html = await fetch(session, url)
+    return BeautifulSoup(html, 'html.parser')
+
+async def extract_contact_info(session, url):
+    soup = await get_soup(session, url)
+    
+    contact_info = {
+        'Name': 'null',
+        'Address': 'null',
+        'Phone': 'null',
+        'Email': 'null',
+        'Website': 'null'
     }
-    try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return BeautifulSoup(response.content, 'html.parser')
-    except requests.RequestException as e:
-        print(f"An error occurred while fetching {url}: {e}")
-        return None
+    
+    # Extract school name from both possible locations
+    name_div1 = soup.find('div', class_='media-body align-items-center align-self-md-end')
+    name_div2 = soup.find('div', class_='align-self-end col-lg-12')
+    
+    if name_div1:
+        name_h1 = name_div1.find('h1', class_='d-inline-block')
+        if name_h1:
+            contact_info['Name'] = name_h1.text.strip()
+    elif name_div2:
+        name_h1 = name_div2.find('h1', class_='text-white d-inline-block')
+        if name_h1:
+            contact_info['Name'] = name_h1.text.strip()
+    
+    contact_ul = soup.find('ul', class_='list-group pmd-list')
+    if contact_ul:
+        for li in contact_ul.find_all('li'):
+            key = li.find('i', class_='material-icons')
+            value = li.find('div', class_='media-body')
+            if key and value:
+                key_text = key.text.strip()
+                value_text = value.text.strip()
+                if 'location_on' in key_text:
+                    contact_info['Address'] = value_text
+                elif 'call' in key_text:
+                    contact_info['Phone'] = value_text
+                elif 'email' in key_text:
+                    img = value.find('img')
+                    if img and 'src' in img.attrs:
+                        email_img_url = urljoin(url, img['src'])
+                        contact_info['Email'] = email_img_url
+                    else:
+                        contact_info['Email'] = value_text if value_text else 'null'
+                elif 'web_asset' in key_text:
+                    contact_info['Website'] = value_text
 
-def extract_school_details(url):
-    soup = get_soup(url)
-    if not soup:
-        return []
+    logging.info(f"Extracted info for {contact_info['Name']}")
+    return contact_info
 
-    schools = []
+async def process_state(session, state_url, state_name):
+    logging.info(f"Processing {state_name} schools")
+    
+    soup = await get_soup(session, state_url)
     school_links = soup.select('a.btn.pmd-btn-flat.btn-block.btn-primary.pmd-ripple-effect')
     
-    for link in school_links:
-        school_url = link['href']
-        school_soup = get_soup(school_url)
-        if school_soup:
-            name = school_soup.find('h1', class_='school-name')
-            address = school_soup.find('p', class_='school-address')
-            schools.append({
-                'name': name.text.strip() if name else 'N/A',
-                'address': address.text.strip() if address else 'N/A',
-                'url': school_url
-            })
-        time.sleep(1)  # Be respectful to the server
+    all_schools_data = []
+    for school_link in school_links:
+        school_url = urljoin(state_url, school_link['href'])
+        school_data = await extract_contact_info(session, school_url)
+        if school_data:
+            school_data['State'] = state_name
+            all_schools_data.append(school_data)
     
-    return schools
+    return all_schools_data
 
-def create_pdf(all_schools):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
+async def main():
+    states = {
+        'Andhra Pradesh': 'https://targetstudy.com/school/state-board-schools-in-andhra-pradesh.html',
+        'Arunachal Pradesh': 'https://targetstudy.com/school/state-board-schools-in-arunachal-pradesh.html'
+    }
     
-    for state, schools in all_schools.items():
-        pdf.set_font("Arial", 'B', 14)
-        pdf.cell(0, 10, f"State: {state}", ln=True)
-        pdf.set_font("Arial", size=12)
-        
-        for school in schools:
-            pdf.multi_cell(0, 10, f"Name: {school['name']}")
-            pdf.multi_cell(0, 10, f"Address: {school['address']}")
-            pdf.multi_cell(0, 10, f"URL: {school['url']}")
-            pdf.ln(5)
-        
-        pdf.add_page()
+    all_schools_data = []
     
-    pdf.output("state_board_schools.pdf")
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for state_name, state_url in states.items():
+            state_data = await process_state(session, state_url, state_name)
+            all_schools_data.extend(state_data)
 
-def main():
-    url = "https://targetstudy.com/school/state-board-schools-in-india.html"
-    soup = get_soup(url)
-    if not soup:
-        return
-
-    target_div = soup.find('div', class_="list-group pmd-list pmd-list-bullet")
-    if not target_div:
-        print("Target div not found on the page.")
-        return
-
-    links = target_div.find_all('a')
-    all_schools = {}
-
-    for link in links:
-        state_name = link.text.strip()
-        state_url = link['href']
-        print(f"Processing {state_name}...")
-        
-        schools = extract_school_details(state_url)
-        all_schools[state_name] = schools
-        
-        print(f"Found {len(schools)} schools in {state_name}")
-
-    create_pdf(all_schools)
-    print("PDF has been generated: state_board_schools.pdf")
+    if all_schools_data:
+        df = pd.DataFrame(all_schools_data)
+        df = df[['State', 'Name', 'Address', 'Phone', 'Email', 'Website']]  # Reorder columns
+        excel_file = "ap_arunachal_schools_info.xlsx"
+        df.to_excel(excel_file, index=False)
+        logging.info(f"Data saved to {excel_file}")
+        print(f"Data saved to {excel_file}")
+        print(f"Extracted data for {len(all_schools_data)} schools:")
+        print(df)
+    else:
+        logging.error("No data collected. Excel file not created.")
+        print("No data collected. Excel file not created.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
