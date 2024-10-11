@@ -125,38 +125,28 @@ async def process_state(session, base_state_url, state_name):
     
     return all_schools_data
 
-async def get_states_from_andhra(session, main_url):
+async def get_states_before_chhattisgarh(session, main_url):
     soup = await get_soup(session, main_url)
     if not soup:
         return {}
 
     states = {}
     state_links = soup.select('div.list-group.pmd-list.pmd-list-bullet a')
-    start_collecting = False
     for link in state_links:
         state_name = link.text.strip().split(' in ')[-1]
-        if state_name == 'Andhra Pradesh':
-            start_collecting = True
-        if start_collecting:
-            state_url = urljoin(main_url, link['href'])
-            states[state_name] = state_url
+        if state_name == 'Chhattisgarh':
+            break
+        state_url = urljoin(main_url, link['href'])
+        states[state_name] = state_url
     
     return states
 
-def read_existing_excel(file_name):
-    if os.path.exists(file_name):
-        return pd.read_excel(file_name)
-    return pd.DataFrame(columns=['State', 'Name', 'Address', 'Phone', 'Email', 'School URL', 'Website'])
-
 async def main():
-    main_url = 'https://targetstudy.com/school/icse-schools-in-india.html'
-    excel_file = "icse_schools_info_from_andhra.xlsx"
-    
-    # Read existing data
-    existing_df = read_existing_excel(excel_file)
+    main_url = 'https://targetstudy.com/school/state-board-schools-in-india.html'
+    excel_file = "schools_before_chhattisgarh.xlsx"
     
     async with aiohttp.ClientSession(headers=headers) as session:
-        states = await get_states_from_andhra(session, main_url)
+        states = await get_states_before_chhattisgarh(session, main_url)
         
         if not states:
             logging.error("Failed to fetch state links. Exiting.")
@@ -170,21 +160,17 @@ async def main():
             all_schools_data.extend(state_data)
 
     if all_schools_data:
-        new_df = pd.DataFrame(all_schools_data)
-        new_df = new_df[['State', 'Name', 'Address', 'Phone', 'Email', 'School URL', 'Website']]  # Reorder columns
+        df = pd.DataFrame(all_schools_data)
+        df = df[['State', 'Name', 'Address', 'Phone', 'Email', 'School URL', 'Website']]  # Reorder columns
         
-        # Combine existing and new data
-        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        
-        combined_df.to_excel(excel_file, index=False)
+        df.to_excel(excel_file, index=False)
         logging.info(f"Data saved to {excel_file}")
         print(f"Data saved to {excel_file}")
-        print(f"Extracted data for {len(all_schools_data)} schools across {len(states)} states:")
-        print(new_df.groupby('State').size())
-        print(f"Total schools in the file: {len(combined_df)}")
+        print(f"Extracted data for {len(all_schools_data)} schools across {len(set(df['State']))} states:")
+        print(df.groupby('State').size())
     else:
-        logging.error("No new data collected. Excel file not updated.")
-        print("No new data collected. Excel file not updated.")
+        logging.error("No data collected. Excel file not created.")
+        print("No data collected. Excel file not created.")
 
 if __name__ == "__main__":
     asyncio.run(main())

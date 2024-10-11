@@ -40,6 +40,7 @@ async def extract_contact_info(session, url):
         'Address': 'null',
         'Phone': 'null',
         'Email': 'null',
+        'School URL': url,
         'Website': 'null'
     }
     
@@ -131,14 +132,10 @@ async def get_remaining_states(session, main_url):
 
     states = {}
     state_links = soup.select('div.list-group.pmd-list.pmd-list-bullet a')
-    start_processing = False
     for link in state_links:
         state_name = link.text.strip().split(' in ')[-1]
-        if state_name == 'Chhattisgarh':
-            start_processing = True
-        if start_processing:
-            state_url = urljoin(main_url, link['href'])
-            states[state_name] = state_url
+        state_url = urljoin(main_url, link['href'])
+        states[state_name] = state_url
         if state_name == 'Ladakh':
             break
     
@@ -147,14 +144,13 @@ async def get_remaining_states(session, main_url):
 def read_existing_excel(file_name):
     if os.path.exists(file_name):
         return pd.read_excel(file_name)
-    return pd.DataFrame(columns=['State', 'Name', 'Address', 'Phone', 'Email', 'Website'])
+    return pd.DataFrame(columns=['State', 'Name', 'Address', 'Phone', 'Email', 'School URL', 'Website'])
+
+# [Keep all the imports and other functions the same as in the original script]
 
 async def main():
     main_url = 'https://targetstudy.com/school/state-board-schools-in-india.html'
-    excel_file = "first_five_states_schools_info.xlsx"
-    
-    # Read existing data
-    existing_df = read_existing_excel(excel_file)
+    excel_file = "remaining_schools_info.xlsx"
     
     async with aiohttp.ClientSession(headers=headers) as session:
         states = await get_remaining_states(session, main_url)
@@ -164,28 +160,36 @@ async def main():
             return
 
         all_schools_data = []
+        total_schools = 0
+        start_collecting = False
         
         for state_name, state_url in states.items():
             logging.info(f"Processing state: {state_name}")
             state_data = await process_state(session, state_url, state_name)
-            all_schools_data.extend(state_data)
+            
+            if not start_collecting:
+                if total_schools + len(state_data) > 4000:
+                    start_index = 4000 - total_schools
+                    all_schools_data.extend(state_data[start_index:])
+                    start_collecting = True
+                total_schools += len(state_data)
+            else:
+                all_schools_data.extend(state_data)
 
     if all_schools_data:
-        new_df = pd.DataFrame(all_schools_data)
-        new_df = new_df[['State', 'Name', 'Address', 'Phone', 'Email', 'Website']]  # Reorder columns
+        df = pd.DataFrame(all_schools_data)
+        df = df[['State', 'Name', 'Address', 'Phone', 'Email', 'School URL', 'Website']]  # Reorder columns
         
-        # Combine existing and new data
-        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        
-        combined_df.to_excel(excel_file, index=False)
+        df.to_excel(excel_file, index=False)
         logging.info(f"Data saved to {excel_file}")
         print(f"Data saved to {excel_file}")
-        print(f"Extracted data for {len(all_schools_data)} new schools across {len(states)} states:")
-        print(new_df.groupby('State').size())
-        print(f"Total schools in the file: {len(combined_df)}")
+        print(f"Extracted data for {len(all_schools_data)} schools across {len(set(df['State']))} states:")
+        print(df.groupby('State').size())
     else:
-        logging.error("No new data collected. Excel file not updated.")
-        print("No new data collected. Excel file not updated.")
+        logging.error("No data collected. Excel file not created.")
+        print("No data collected. Excel file not created.")
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+   
